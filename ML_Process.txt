@@ -1,0 +1,154 @@
+Reading/Loading the Dataset into DataFrame
+----------------------------------------------
+	Instantiate SparkSession
+	Load the DataSet into a DataFrame
+
+
+Data Cleaning/Preparation
+-------------------------
+	Assign Headers to the Columns in DataFrame
+	Remove Rows with missing values(?)
+	Remove Duplicate Rows
+	Remove Not Relevant columns/rows
+	FeatureTransformers
+		Convert Numeric Data/Categorical Data in string format to Numeric Form using StringIndexer 	
+		Convert Numerical form of Categorical Data to One-hot-encoding format using OneHotEncoder 
+		Setup the data in Vectorized Format using VectorAssembler
+
+Train the Model with the Data
+-----------------------------
+	Split the dataset into training and testing datasets
+	Setup a pyspark ml pipeline 
+	Setup the features that we want to use train our ML Model
+	Select the ML Classifier to use form ml library
+		LinearRegression
+		DecisionTreeClassifier
+		RandomForestClassifier
+		KMeans
+		ALS
+		
+	Perform training using ML Classifier
+	
+Use the Model for Prediction
+----------------------------
+	Use the trained model for predictions using testdata
+	
+Evaluat the Model
+------------------
+	Evaluate the Model
+		RegressionEvaluator
+		MulticlassClassificationEvaluator
+		ClusteringEvaluator
+	Metrics to Evaluate the Model
+		R2 -
+		rmse - Root Mean Squared Error
+		accuracy
+		recall
+		Silhouette
+		
+
+Tuning the Model 
+----------------
+	CrossValidation and ParamGridBuilder
+
+Dimensionality Reduction
+------------------------
+	PrincipalComponentAnalysis
+	
+	
+Libraries
+---------
+pyspark.sql.types  import FloatType,IntegerType
+		Used for casting to respective data types
+		
+pyspark.sql.functions import col
+		Used to select columns from dataframe and cast them as required to different types
+		
+pyspark.sql.functions import stddev, mean
+		Used to compute average,Standard Deviation value of a specific column
+
+pyspark.sql.functions import monotonically_increasing_id
+		Used When we want a monotonically_increasing_id for a row in a dataframe		
+		
+Feature Transformers
+====================		
+pyspark.ml.feature import StringIndexer
+		Used to convert numerical data/categorical data` in string format to numeric format
+pyspark.ml.feature import OneHotEncoder
+		Used to convert categorical data in numeric format to OneHotEncoded format
+pyspark.ml.feature import VectorAssembler
+		Used to Vectorize all features to a single feature column
+pyspark.ml.linalg import Vectors
+	Alternative way to vectorize the features into a single feature column		
+		
+ML Algorithms
+=============		
+pyspark.ml.regression import LinearRegression		
+	Used for LinearRegression Classifier
+	
+pyspark.ml.classification  import DecisionTreeClassifier		
+	Used for DecisionTreeClassifier
+
+pyspark.ml.classification import RandomForestClassifier	
+	Used to train the model with RandomForestClassifier
+	
+pyspark.ml.clustering import KMeans	
+	USed for KMeans Clustering Classifier
+	
+pyspark.ml.recommendation  import ALS	
+	Used for Recommendation ALS Model
+	
+Dimensionality Reduction / Principal Component Analysis
+=======================================================	
+pyspark.ml.feature  import PCA	
+	Used for Dimensionality Reduction (PCA) to select most important features of the model	
+	
+
+pyspark.ml import Pipeline	
+	Used to setup a pipeline to orchestrate indexer,encoders,assemblers and so on.
+
+Model Evaluation
+================	
+pyspark.ml.evaluation import RegressionEvaluator	
+	Used to Evaluate the trained regression model
+	
+pyspark.ml.evaluation import MulticlassClassificationEvaluator	
+	Used to Evaluate the trained Decision Tree model
+	
+pyspark.ml.evaluation import ClusteringEvaluator	
+	Used to Evaluate the trained clustering model
+	
+
+Visualising Data
+================	
+import matplotlib.pyplot as plt
+	Used to plot graphs of the dataset
+	
+import seaborn as sns	
+	Used for creating a heatmap of data to visualize highly correlated data
+	
+	
+Model Tuning and Cross Validation
+=================================
+pyspark.ml.tuning import ParamGridBuilder
+	Used to fine tune by creating and evaluating multiple models
+
+pyspark.ml.tuning import CrossValidator	
+	Used to train on a subset of the dataset and test in a different subset of the dataset that model has not seen before
+
+	
+
+
+
+ML Use Cases
+============
+Predicting the Price of an automobile given a set of features
+Predicting the grape variety from wine characteristics
+Predicting whether a person's income is greater than $50K
+Examine Data about passengers on Titanic
+Use Implicit Colloborative Filtering for Band  Recommendations (Implicit Feedback)
+Use Colloborative Filtering for Movie Recommendations with Explicit Feedback
+Effects of Dimensionality Reduction when making predictions
+	
+
+		

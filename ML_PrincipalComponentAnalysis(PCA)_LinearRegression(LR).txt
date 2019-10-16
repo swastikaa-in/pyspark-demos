@@ -1,0 +1,281 @@
+#Instantiate SparkSession
+from pyspark.sql import SparkSession
+spark=SparkSession \
+		.builder \
+		.appName('Effects of Dimensionality Reduction when making predictions') \
+		.getOrCreate()
+		
+		
+
+
+# wget https://archive.ics.uci.edu/ml/machine-learning-databases/00275/Bike-Sharing-Dataset.zip
+# gsutil cp day.csv gs://dexdebra-123/datasets
+# Use sparkSession to read csv file
+
+rawdata=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .load('gs://dexdebra-123/datasets/day.csv')
+
+
+# Setup Dataframe with only the columns we are interested
+from pyspark.sql.functions import col
+dataset=rawdata.select(
+                    col('season').cast('float'),
+                    col('yr').cast('float'),
+                    col('mnth').cast('float'),
+                    col('holiday').cast('float'),
+                    col('weekday').cast('float'),
+                    col('workingday').cast('float'),
+                    col('weathersit').cast('float'),
+                    col('temp').cast('float'),
+                    col('atemp').cast('float'),
+                    col('hum').cast('float'),
+                    col('windspeed').cast('float'),
+                    col('cnt').cast('float')
+)
+# We left cols which had a count of casual and registered
+# we are only interested in total count of bike rentals		
+
+
+
+# The values in two or more columns may by highly correlated with one another
+# In such situations we  want to use only one of the two columns
+# In order to see correlations between columns we can use heatmap feature in seaborn visualizing ibrary
+# Generally, ML algorithms will not work well, when there are huge number of columns with correlated data
+# Ideally, data should be un-correlated
+# That is , whey PCA is so useful.
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+corrmat=dataset.toPandas().corr()
+plt.figure(figsize=(7,7))
+sns.set(font_scale=1.0)
+sns.heatmap(corrmat,vmax=8,square=True,annot=True,fmt='.2f',cmap="winter")
+plt.show()
+
+#Season and Month are correlated
+#temp and atemp are correlated
+#weathersit and hum are highly correlated
+
+
+# Remove 'cnt' column
+featuresCols = dataset.columns
+featuresCols.remove('cnt')
+featuresCols
+
+
+
+# Use VectorAssembler to pull all the features into a single column
+from pyspark.ml.feature import VectorAssembler
+
+assembler=VectorAssembler(
+        inputCols=featuresCols, outputCol='features'
+)
+
+
+# Pass the input dataset to assembler and create a new dataframe with features column		
+vectorDF=assembler.transform(dataset)
+vectorDF.toPandas().head()
+
+len(featuresCols)
+
+
+# Split the data into 80% for trainingData and 20% for testingData
+(trainingData,testingData)=dataSet.randomSplit([0.8,0.2])
+
+
+# Instantiate LinearRegression Classifier
+from pyspark.ml.regression import LinearRegression
+lr=LinearRegression(
+        maxIter=100,
+        regParam=1.0,
+        elasticNetParam=0.8,
+        labelCol='cnt',
+        featuresCol='features'
+)
+
+
+model=lr.fit(trainingData)
+
+
+# Evaluate 
+print('Training R2 Score=',model.summary.r2)
+print('Training RMSE=',model.summary.rootMeanSquaredError)
+
+
+
+# We will use the model for prediction on our testData
+# To See bike rental results
+predictions=model.transform(testingData)
+predictions.toPandas().head()
+
+
+# Evaluate  using RegressionEvaluator how model performs on TestData
+from pyspark.ml.evaluation import RegressionEvaluator
+evaluator=RegressionEvaluator(
+    labelCol='cnt',
+    predictionCol='prediction',
+    metricName='r2'
+)
+
+
+
+r2=evaluator.evaluate(predictions)
+print('Test R2 score= %g' % r2)
+
+
+rmse=evaluator.evaluate(predictions)
+print('Test RMSE=',rmse)
+
+
+predictionPandas=predictions.toPandas()
+plt.figure(figsize=(15,6))
+plt.plot(predictionPandas['cnt'],label='Actual')
+plt.plot(predictionPandas['prediction'],label='Predicted')
+
+plt.ylabel('Ride Count')
+plt.legend()
+plt.show()
+
+
+
+from pyspark.ml.feature  import PCA
+pca=PCA(
+			k=8, # 8 most important features
+			inputCol='features', 
+			outputCol='pcaFeatures'
+)
+
+
+# perform dimensionality reduction on our training data
+pcaTransformer=pca.fit(vectorDF)
+
+
+# Examing principal components that were generated using PCA Estimator
+# They are available in pcaFeatures of the dataframe
+pcaFeatureData=pcaTransformer.transform(vectorDF).select('pcaFeatures')
+pcaFeatureData.toPandas().head()
+
+
+pcaFeatureData.toPandas()['pcaFeatures'][0]
+
+
+pcaTransformer.explainedVariance
+
+
+import matplotlib.pyplot as plt
+plt.figure(figsize=(15,6))
+plt.plot(pcaTransformer.explainedVariance)
+plt.xlabel('Dimension')
+plt.ylabel('Explain Variance')
+plt.show()
+
+
+
+# There is a sharp drop-off in the importance of the features
+# so these features are the ones that we want to use perform regression
+# Which are these features?
+# When we perform PCA ,it is like shifting the X-axis on the original feauture columns
+# so that we can capture Maximum Variance in the underlying data
+# Principal components by themselves do not have any feature columns associated with themselves
+# We perform a join operation between the principal components and our original data which # contains actual bike rental counts 
+# add a new 'row_index column' to each dataframe that will serve as ID field
+# used to serve to join 2 tables,'PCA feature data' and 'vector data frame' 
+# Special library: monotonically_increasing_id
+
+from pyspark.sql.functions import monotonically_increasing_id
+pcaFeatureData=pcaFeatureData.withColumn('row_index',monotonically_increasing_id())
+vectorDF=vectorDF.withColumn('row_index',monotonically_increasing_id())
+
+
+
+# Form a inner join operation on the two DataFrames and extract the columns we are interested
+# cnt and pcaFeatures
+# cnt fields is the label for our regression
+# pcaFeatures form the features of our trainingData
+
+transformedData = pcaFeatureData.join(vectorDF,on=['row_index']).\
+                  sort('row_index'). \
+                  select('cnt','pcaFeatures')
+        
+transformedData.toPandas().head()   
+
+
+
+# split dataset 80% traiing, 20% test data and
+(pcaTrainingData,pcaTestData)=transformedData.randomSplit([0.8,0.2])
+
+
+# Setup linear regression estimator
+# pass 8-principalcomponents that we extracted from the underlying data as features
+
+pcalr=LinearRegression(
+		maxIter=100,
+		regParam=1.0,
+		elasticNetParam=0.8,
+		labelCol='cnt',
+		featuresCol='pcaFeatures'
+)
+
+
+# train the regressionmodel on training data set
+pcaModel=pcalr.fit(pcaTrainingData)
+
+
+# Evaluate using r2 and RMSE
+print('Training R2 Score= ', pcaModel.summary.r2)
+print('Training RMSE = ',pcaModel.summary.rootMeanSquaredError)
+
+
+# When we use the principal components our model does not perform as as well  on the training data
+#as before
+# Apply the regression model that has been trained on principal components to our test data
+# which is also represented in the form of principalcomponents
+
+pcaPredictions=pcaModel.transform(pcaTestData)
+pcaPredictions.toPandas().head()
+
+
+# Use RegressionEvaluator to check how well our model performs on test data
+evaluator=RegressionEvaluator(
+    labelCol='cnt',
+    predictionCol='prediction',
+    metricName='r2'
+)
+
+
+rsquare=evaluator.evaluate(pcaPredictions)
+print("Test r2 = %g" % rsquare)
+
+# Use RegressionEvaluator to check how well our model performs on test data
+evaluator=RegressionEvaluator(
+    labelCol='cnt',
+    predictionCol='prediction',
+    metricName='rmse'
+)
+rmse=evaluator.evaluate(pcaPredictions)
+print("Test R2 score = %g" % rmse)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   

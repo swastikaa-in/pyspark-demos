@@ -1,0 +1,272 @@
+1.Instantiate SparkSession
+==========================
+from pyspark.sql import SparkSession
+spark=SparkSession \
+			.builder \
+			.appName('Predicting whether a person\'s income is greater than $50K') \
+			.getOrCreate()
+			
+			
+			
+2.Load the DataSet into a DataFrame	( Tabular Format )	
+======================================================
+# https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data
+# US Census Data collected about individuals
+# Need to predict if a person earns more or less than $50K 
+# gsutil cp adult.data gs://dexdebra-123/datasets
+# Use sparkSession to read csv file			
+
+rawData=spark.read \
+           .format('csv') \
+           .option('header','false') \
+           .option('ignoreLeadingWhiteSpace','true') \
+           .load('gs://dexdebra-123/datasets/adult.data')
+
+
+3.Assign meaningful Headers
+  -------------------------
+dataSet=rawData.toDF(
+	"Age",
+	"WorkClass",
+	"FnlWgt",
+	"Education",
+	"EducationNum",
+	"MaritalStatus",
+	"Occupation",
+	"Relationship",
+	"Race",
+	"Gender",
+	"CapitalGain",
+	"CapitalLoss",
+	"HoursPerWeek",
+	"NativeCountry",
+	"Label"
+)
+
+4.Clean the Data
+  --------------
+# Drop the FnlWgt Column as not relevant
+dataSet=dataSet.drop('FnlWgt')
+
+
+# Replace All '?' value in all cells with specific value('None') in dataFrame
+print('Count Before: ' , dataSet.count())
+dataSet=dataSet.replace('?',None)
+dataSet=dataSet.dropna(how='any')
+print('Count After: ' , dataSet.count())
+
+
+5. Convert Numeric Data in String format  to numerical form using StringIndexer FeatureTransformer
+   ================================================================================================
+# Some of the columns Age,EducationNum,HoursPerWeek,CapitalGain,CapitalLoss ould contain numeric values
+# But these numeric values are present as strings in this dataframe
+# We can convert these values to numeric by using cast operation
+from pyspark.sql.types  import FloatType
+from pyspark.sql.functions import col
+
+dataSet=dataSet.withColumn('Age', dataSet['Age'].cast(FloatType()))
+dataSet=dataSet.withColumn('EducationNum', dataSet['EducationNum'].cast(FloatType()))
+dataSet=dataSet.withColumn('CapitalGain', dataSet['CapitalGain'].cast(FloatType()))
+dataSet=dataSet.withColumn('CapitalLoss', dataSet['CapitalLoss'].cast(FloatType()))
+dataSet=dataSet.withColumn('HoursPerWeek', dataSet['HoursPerWeek'].cast(FloatType()))
+
+
+6. Convert Categorical Variables/Values to numerical Form using StringIndexer
+   ==========================================================================
+# Create a List of Categorical Features which we want to convert to numerical form
+categoricalFeatures= [
+		'WorkClass',
+		'Education',
+		'MaritalStatus',
+		'Occupation',
+		'Relationship',
+		'Race',
+		'Gender',
+		'NativeCountry'
+]
+
+
+# Create StringIndexer for CategoricalFeatures using python list comprehension
+from pyspark.ml.feature import StringIndexer
+indexers=[ StringIndexer(inputCol=column,outputCol=column + '_index',handleInvalid='keep') for column in categoricalFeatures]
+
+
+7.Convert Numerical form of categories to One-hot-encoding using python list comprehension
+  ========================================================================================
+from pyspark.ml.feature import OneHotEncoder
+encoders=[ OneHotEncoder ( 
+				inputCol=column + '_index',
+				outputCol=column + '_encoded') for column  in categoricalFeatures]
+				
+
+8.Split the data into 80% for trainingData and 20% for testData
+(trainingData,testData)=dataSet.randomSplit([0.8,0.2])
+
+9. Add indexer for label To Convert Categorical String Representation of Label to numeric form
+   ===========================================================================================
+   
+   # Labels in the dataset , annual earning under $50K or over $50K should be converted to numeric form
+   labelIndexer= [ StringIndexer( inputCol='Label' , outputCol='Label_index')]
+
+10.Create a pyspark ml pipeline 
+   ============================
+# We have a whole series of operations we want to perform on the DataFrame
+# Import pipeline class and setup various stages of the pipeline
+from pyspark.ml import Pipeline
+
+# Setup the various stages of pipeline
+# 1st stage is indexers - Convert all categorical values to numeric form
+# 2nd stage is encoders - Convert the numeric form of the categorical variables to one-hot-notation
+# final stage is labelIndexer - Convert categorical string represent of labels to numeric form
+pipeline=Pipeline(stages=indexers + encoders + labelIndexer )
+
+# The pipeline will
+# ---Perform all transformations on the input data and then
+
+
+
+# Pass the trainingData thru the pipeline ,
+# by calling first the fit() method and then 
+# the transform() method both on the trainingData
+transformedDF = pipeline.fit(trainingData).transform(trainingData)
+
+
+
+11.Setup the features that we want to use train our ML Model
+   =========================================================
+# We use data in numerical columns as is.
+# For CategoricalVariables we  use their one-hot-encoder notation
+
+requiredFeatures= [
+        'Age',
+        'EducationNum',
+        'CapitalGain',
+        'CapitalLoss',
+        'HoursPerWeek',
+        'WorkClass_encoded',
+        'Education_encoded',
+        'MaritalStatus_encoded',
+        'Occupation_encoded',
+        'Relationship_encoded',
+        'Race_encoded',
+        'Gender_encoded',
+        'NativeCountry_encoded',
+]
+
+# InputFeatures are fed in the form of a DenseVector
+# Use VectorAssember to Vectorize the features to a column called 'features'
+# Pass the columns we want to be vectorized and
+# Output will be stored in a column called 'features'
+from pyspark.ml.feature import VectorAssembler
+assembler = VectorAssembler( inputCols=requiredFeatures , outputCol='features')
+
+
+# Use the VectorAssembler to vectorize the features
+# Store the result in transformedDF dataframe
+transformedDF=assembler.transform(transformedDF)
+transformedDF.toPandas().head()
+# There is a column called 'features' which holds all of our features in a Dense Vector Representation	
+
+
+# Only select the features column to examine exactly how it looks
+transformedDF.select('Label_index').toPandas()		
+
+
+
+12.Perform training using RandomForest Classifier in ml library
+   ============================================================
+# Instantiate the RandomForest Classifier
+# ML Model that  we want to use to train on our Adult Census Data Set
+from pyspark.ml.classification import RandomForestClassifier
+
+# Specify the labels and features for this classifer and our maxDepth hyperparameter
+rf=RandomForestClassifier( 
+		labelCol='Label_index',
+		featuresCol='features',
+		maxDepth=5 # Individual Decision Trees should not have a depth of more than 5
+)
+
+
+# Instantiate a ML pipeline for this training workflow
+# This pipeline will perform all the transformations that we want on the input data
+# Assemble the features into Dense Vector form
+# Apply RandomForest Classifier to it
+
+from pyspark.ml import Pipeline
+pipeline = Pipeline ( 
+        stages = indexers + encoders + labelIndexer + [assembler,rf]
+)
+
+# Run the training pipeline to get the ML Classifier Model
+# Call pipeline.fit() on trainingData
+model= pipeline.fit(trainingData)
+
+
+12.Use the trained model for predictions
+   =====================================
+# We now have trained Random Forest Model
+# Let us use this model for predictions
+# This model is the result of running our training pipeline stages
+# Here are our predictions result in a dataframe
+# We have columns at very end for rawPrediction, probablity and prediction
+
+model = pipeline.fit(trainingData)
+predictions = model.transform(testData)
+predictionsDF = predictions.toPandas()
+predictionsDF.head()
+
+
+# Create a DataFrame called predictions with
+# actual label(Label_index) and predicted label (prediction) side by side
+predictions = predictions.select ( 
+						'Label_index', # Actual Label
+						'prediction'   # Predicted Label
+						)
+
+
+13. Evaluate the Model
+    ==================
+# Instantiate the MulticlassClassificationEvaluator to see how our model performs
+# The metric we are using 'accuracy'
+
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+evaluator=MulticlassClassificationEvaluator(
+    labelCol='Label_index',
+    predictionCol='prediction',
+    metricName='accuracy'
+)
+
+
+#Use the evaluator's evaluate method to evaluate the model
+accuracy=evaluator.evaluate(predictions)
+print('Test Accuracy=',accuracy)
+# 83% pretty decent
+
+
+
+# Take a closer look at the incorrect predictions made by the model
+# So as to glean some insights from this
+predictionsDF.loc[
+    predictionsDF['Label_index'] != predictionsDF['prediction']
+]
+# Take a look at Raw probablity value , they are very close
+# The model had a hard time figuring out if this individual earned > 50K or < 50K
+
+
+# Tweak the RandomForest model just a bit
+# Instead of maxDepth as '5' , we will change this to '10'
+# This means individual decision trees can be much deeper
+# We are now Ready to go ahead and instantiate the RandomForest Classifier
+# ML Model that  we want to use to train on our Adult Census Data Set
+from pyspark.ml.classification import RandomForestClassifier
+
+# Specify the labels and features for this classifer and our maxDepth hyperparameter
+rf=RandomForestClassifier(
+			labelCol='Label_index',
+			featuresCol='Features',
+			maxDepth=10
+		)
+		
+# Individual Decison Trees can be much deeper
+
+# Re-run all the steps again after this step

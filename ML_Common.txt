@@ -1,0 +1,261 @@
+#Instantiate SparkSession
+from pyspark.sql import SparkSession
+spark=SparkSession \
+			.builder \
+			.appName('Predicting the grape variety from wine characteristics') \
+			.getOrCreate()
+
+SparkSession
+	Simplified Entry point used in Spark 2
+	Encapsulates within itself sparkcontext,sqlcontext and other contexts available in spark			
+	Specify the format in which the data exists and also if it has header or not.
+			
+			
+# Use sparkSession to read csv file			
+rawData=spark.read \
+				.format('csv') \
+				.option('header','false') \
+				.load('../datasets/win3.data')
+				
+
+# Assign meaning col names and store it in dataset variable
+dataset=rawData.toDF('Label',
+						'Alcohol','MalicAcid','Ash','AshAlkanity','Magnesium','TotalPhenols',
+						'Flavanoids','NonflavanoidPhenols','Proanthocyanins','ColorIntensity',
+						'Hue','OD','Proline'
+					)			
+
+# Convert the features to feed into our ML Algorithm
+# Setup the data in a Vectorized Format
+# 	Extract the labels and features from the input dataframe
+#   Converts the features to DenseVectors
+#   All features are lumped into a single column
+
+from pyspark.ml.linalg import Vectors
+
+def vectorize(data):
+     return data.rdd.map(lambda r: [r[0],Vectors.dense(r[1:])].toDF(['label','features'])
+
+
+vectorizedData=vectorize(dataset);
+vectorizedData.show(5)
+
+
+# Convert Categorical Values to numeric using StringIndexer
+
+from pyspark.ml.feature import StringIndexer
+
+labelIndexer=StringIndexer( inputCol='label',outputCol='indexedLabel' )
+
+# Fit method on the labelIndexer will generate the corresponding float value for categorical data and 
+# apply these float point values to vectorized data , using transform method 
+indexedData=labelIndexer.fit(vectorizedData).transform(vectorizedData)
+indexedData.take(2)
+
+# Find unique labels in dataset
+indexedData.select('label').distinct().show()
+
+# Find unique indexedLabel in dataset
+indexedData.select('indexedLabel').distinct().show()
+
+# Drop a Column in a DataFrame
+dataset=dataset.drop('FnlWgt')
+
+
+# Convert DF to Pandas
+dataset.toPandas()
+
+# Convert to Pandas and display first 5 rows
+dataset.toPandas().head()
+
+# Replace All '?' value in all cells with specific value('None') in dataFrame
+dataset=dataset.replace('?',None)
+dataset = dataset.withColumn('col_with_string', when(df.col_with_string == '?',None).otherwise(df.col_with_string))
+
+#Drop a Row if any of the columns contains missing information ( Represented by 'None' value)
+dataset=dataset.dropna(how='any')
+
+#Describe the DataFrame, quick summary of every feature column
+dataset.describe()
+DataFrame[summary: string,Age: string,...Label:string ]
+
+#Convert DataFrame values into numeric values by using Cast function
+from pyspark.sql.types import FloatType
+from pyspark.sql.functions import col
+
+dataset=dataset.withColumn('Age',dataset['Age'].cast(FloatType()))
+dataset=dataset.withColumn('EducationNum',dataset['EducationNum'].cast(FloatType()))
+dataset=dataset.withColumn('CapitalGain',dataset['CapitalGain'].cast(FloatType()))
+dataset=dataset.withColumn('CapitalLoss',dataset['CapitalLoss'].cast(FloatType()))
+dataset=dataset.withColumn('HoursPerWeek',dataset['HoursPerWeek'].cast(FloatType()))
+
+
+
+# Use OneHotEncoder
+
+from pyspark.ml.feature import OneHotEncoder
+
+encodedDF=OneHotEncoder(
+			inputCol='WorkClass_index',
+			outputCol='WorkClass_encoded').transform(indexedDF)
+			)
+			
+encodedDF.toPandas().head()
+
+
+# split data set into training and test data set 80:20 ratio
+(trainingData,testData)=dataset.randomSplit([0.8,0.2])
+
+# Convert All Categorical Values to numeric format and we should encode all of these to onehot notation as well.
+
+categoricalFeatures= [
+		'WorkClass',
+		'Education',
+		'MaritalStatus',
+		'Occupation',
+		'Relationship',
+		'Race',
+		'Gender',
+		'NativeCountry'
+		]
+		
+# converts all categorical values to numeric form
+# Use List Comprehension in python to create list of StringIndexer's
+
+indexers=[ StringIndexer(
+				inputCol=column,
+				ouputCol=column + '_index',
+				handleInvalid='keep') for column in categoricalFeatures]	
+				
+handleInvalid='keep'
+Used to treat categorical value it has not seen before.
+If it encounters new categorical value in test data , which it has not seen in training data,
+then it will simply assign a new index to it.
+
+				
+				
+# Apply OneHotEncoding for more than one columns using Python List comprehension
+
+# convert numeric form of the categorical values to one hot notation
+encoders=[ OneHotEncoder ( 
+				inputCol=column + '_index',
+				outputcol=column + '_encoded') for column  in categoricalFeatures]
+
+
+# Create Pipeline with indexers,encoders from pyspark.ml import Pipeline
+
+pipeline=Pipeline(stages=indexers+encoders)
+
+#Pass our trainingData through the pipeline by 
+	first calling the fit() method and then
+	transform() method , both on trainingData.
+
+	transformedDF=pipeline.fit(trainingData).transform(trainingData)
+
+				
+# Setup the features we want to use to train our ML model.
+	requiredFeatures= [
+	'Age',
+	'EducationNum',
+	'CapitalGain',
+	'CapitalLoss',
+	'HoursPerWeek',
+	'WorkClass_encoded',
+	'Education_encoded',
+	'MaritalStatus_encoded',
+	'Occupation_encoded',
+	'Relationship_encoded',
+	'Race_encoded',
+	'Gender_encoded',
+	'NativeCountry_encoded'
+]
+
+assembler=VectorAssembler(inputCols=requiredFeatures,outputCol='features')
+transformedDF=assembler.transform(transformedDF)			
+
+
+# Select only interested columns
+from pyspark.sql.functions import col
+# Select interested Columns and cast to respective types
+
+
+dataset=rawdata.select(
+			col('Survived').cast('float'),
+			col('Pclass').cast('float'),
+			col('Sex').cast('float'),
+			col('Age').cast('float'),
+			col('Fare').cast('float'),
+			col('Embarked').cast('float')
+)
+			
+# Examine the distribution of specific column
+dataset.select('weight').describe().toPandas()			
+
+
+# Print all columns in a df
+
+#we can use the columns attribute just like with pandas
+columns = df.columns
+print('The column Names are:')
+for i in columns:
+    print(i)
+	
+	
+# Use Views with DataFrame
+# I will start by creating a temporary table query with SQL
+df.createOrReplaceTempView('df')
+spark.sql(
+'''
+SELECT `Quarter Ending`, Department, Amount, State FROM df
+LIMIT 10
+'''
+).show()	
+
+# Read CSV File
+
+df = spark.read.csv('Vermont_Vendor_Payments (1).csv', header='true', inferSchema = True)
+
+
+# Create a DataFrame
+training = spark.createDataFrame([
+    (1.0, Vectors.dense([0.0, 1.1, 0.1])),
+    (0.0, Vectors.dense([2.0, 1.0, -1.0])),
+    (0.0, Vectors.dense([2.0, 1.3, 1.0])),
+    (1.0, Vectors.dense([0.0, 1.2, -0.5]))], ["label", "features"])
+
+
+training = spark.createDataFrame([
+    (0, "a b c d e spark", 1.0),
+    (1, "b d", 0.0),
+    (2, "spark f g h", 1.0),
+    (3, "hadoop mapreduce", 0.0)
+], ["id", "text", "label"])
+
+
+# Use Filter on DataFrame
+people.filter(people.age > 30).join(department, people.deptId == department.id) \
+  .groupBy(department.name, "gender").agg({"salary": "avg", "age": "max"})
+	
+	
+# instantiate the RandomForestclassifer , ML Model that we want to train on dataset
+from pyspark.ml.classification import RandomForestClassifier
+rf=RandomForestClassifier(labelCol='Label_index',featuresCol='features',maxDepth=5)
+
+# Instantiate a ML Pipeline for this training workflow when using RandomForest
+	pipeline=Pipeline(
+			stages= indexers + encoders + labelIndexer + [ assembler + rf ]
+	)
+	
+Run the ML training Pipeline to get your model.
+	model=pipeline.fit(trainingData)	
+
+	
+# Instantiate MulticlassClassificationEvaluator
+
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+evaluator=MulticlassClassificationEvaluator(
+	labelCol='Label_index',
+	predictionCol='prediction',
+	metricName='accuracy'
+	)
+	

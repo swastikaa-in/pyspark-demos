@@ -1,0 +1,90 @@
+#ParamGridBuilder
+
+  # Allows us to specify different values that we want to use
+  # for the design parameters of our ML model
+  # ParamGridBuilder will instantiate different models based on these design parameters
+  # Run Training use our dataset and recommend the best model to us.
+
+
+1.Setup the ParamGrid using ParamGridBuilder
+  ------------------------------------------
+from pyspark.ml.tuning import ParamGridBuilder
+paramGrid=ParamGridBuilder().addGrid(
+    lr.maxIter,[10,50,100]).addGrid( # 10 or 50 or 100 epochs,which of these perform best.
+    lr.regParam,[0.1,0.3,1.0]).addGrid( # 0.1,0.3 and 1.0
+    lr.elasticNetParam,[0.0,0.8,1.0]).build() # Move from lasso regression to Pure Ridge Regression
+	
+	
+2.Use the RegressionEvaluator with RMSE metric to evaluate the model's that have been built using ParamGrid
+  ---------------------------------------------------------------------------------------------------------
+evaluator=RegressionEvaluator (
+									labelCol='price',
+									predictionCol='prediction',
+									metricName='rmse'
+								)	
+
+
+3. Use Cross Validation to help tune our model
+   -------------------------------------------
+
+# A Method to  train our model on a subset of data and test it using another subset that
+# the model has not seen before
+# The inputs are,
+# (i)   Model Training Pipeline,
+# (ii)  Params in our ParamGrid,
+# (iii) Evaluator and
+# (iv)  number of folds and that we want to specify in Cross Validation.
+
+# The number of folds refers to number of subsets that we want to divide our data into.
+from pyspark.ml.tuning import CrossValidator
+crossval=CrossValidator (
+							estimator=pipeline, # Our Model Training Pipeline
+							estimatorParamMaps=paramGrid, # Params defined in ParamGrid
+							evaluator=evaluator, # Evaluator
+							numFolds=3 # Number of folds we want to specify for Cross Validation
+						)
+						
+
+# Start the Training Process
+model=crossval.fit(trainingData)
+
+
+# Once training is Complete,
+# Access Linear Regression model from Pipeline
+lrModel=model.bestModel.stages[-1]
+lrModel
+
+
+# Print the Parameters that produced the best model
+print('maxIter=',lrModel._java_obj.getMaxIter())
+print('elasticNetParam=',lrModel._java_obj.getElasticNetParam())
+print('regParam=',lrModel._java_obj.getRegParam())
+# Ridge Regression Model
+
+
+
+# Use the model for predictions
+predictions=model.transform(testData)
+
+# Use the RegressionEvaluator with R2 metric to evaluate the model
+evaluator=RegressionEvaluator (
+labelCol='price',
+predictionCol='prediction',
+metricName='r2'
+)
+r2=evaluator.evaluate(predictions)
+
+print('Test R2 Score=%g' % r2)
+# Much higher than R2 Score we saw earlier					
+
+
+# Use the RegressionEvaluator with rmse metric to evaluate the model
+evaluator=RegressionEvaluator (
+labelCol='price',
+predictionCol='prediction',
+metricName='rmse'
+)
+
+rmse=evaluator.evaluate(predictions)
+print('Test RMSE Score=%g' % rmse)
+

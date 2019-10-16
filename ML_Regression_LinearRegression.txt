@@ -1,0 +1,277 @@
+1.Instantiate SparkSession
+---------------------------
+from pyspark.sql import SparkSession
+spark=SparkSession \
+	.builder \
+	.appName('Predicting the Price of an automobile given a set of features ') \
+	.getOrCreate()
+
+2.Load the DataSet into a DataFrame	( Tabular Format )	
+------------------------------------------------------
+# wget https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data
+# gsutil cp imports-85.data gs://dexdebra-123/datasets
+# Use sparkSession to read csv file			
+rawData=spark.read \
+		.format('csv') \
+		.option('header','false') \
+		.load('gs://dexdebra-123/datasets/imports-85.data')
+		
+		
+3. Assign meaningful Headers
+   -------------------------
+rawData=rawData.toDF(
+    "symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels",
+          "engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders",
+          "engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg",
+          "highway-mpg","price")
+
+		  
+
+4. Convert Numerical Values Read as String values to floating format
+   -----------------------------------------------------------------
+
+from pyspark.sql.functions import col
+dataSet=rawData.select(
+		col('price').cast('float'),
+		col('make'),
+		col('num-of-doors'),
+		col('body-style'),
+		col('drive-wheels'),
+		col('wheel-base').cast('float'),
+		col('curb-weight').cast('float'),
+		col('num-of-cylinders'),
+		col('engine-size').cast('float'),
+		col('horsepower').cast('float'),
+		col('peak-rpm').cast('float'),
+)	
+
+5. Clean the Data
+   --------------
+print('Count Before: ' , dataSet.count())
+
+# Replace All '?' value in all cells with specific value('None') in dataFrame
+dataSet=dataSet.replace('?',None)
+
+# Drop all rows in the dataSet with a value of 'None' in any column of the DataFrame
+dataSet=dataSet.dropna(how='any')
+
+print('Count After: ' , dataSet.count())
+
+
+
+6. Split the data
+   ---------------
+   #80% for trainingData and 20% for testData
+   
+(trainingData,testData)=dataSet.randomSplit([0.8,0.2])
+
+
+
+7. Make the list of All Categorical Features in our dataset
+   --------------------------------------------------------
+# Convert them to one-hot-notation
+categoricalFeatures= [
+        'make',
+        'num-of-doors',
+        'body-style',
+        'drive-wheels',
+        'num-of-cylinders'
+]
+
+
+# Make a list of transformers we need
+
+# Create StringIndexer for CategoricalFeatures using python list comprehension
+from pyspark.ml.feature import StringIndexer
+
+# Convert Numerical form of categories to One-hot-encoding using python list comprehension
+from pyspark.ml.feature import OneHotEncoder
+
+# InputFeatures are fed in the form of a DenseVector
+# Use VectorAssember to Vectorize the features to a column called 'Features'
+# Pass the columns we want to be vectorized and
+# Output will be stored in a column called 'Features'
+from pyspark.ml.feature import VectorAssembler	 
+
+
+8.Convert Categorical Data in dataset to numerical form using StringIndexer FeatureTransformer
+  ---------------------------------------------------------------------------------------------
+# Convert CategoricalFeatures to numeric form
+indexers=[ StringIndexer(
+								inputCol=column,
+								outputCol=column + '_index',
+								handleInvalid='keep'
+						) 		for column in categoricalFeatures]
+
+
+9. Convert Numerical form of categories to One-hot-encoding using python list comprehension
+   -----------------------------------------------------------------------------------------
+from pyspark.ml.feature import OneHotEncoder
+encoders=[ OneHotEncoder ( 
+				inputCol=column + '_index',
+				outputCol=column + '_encoded') for column  in categoricalFeatures]						
+
+
+10.Setup the features required for training the model
+   --------------------------------------------------
+
+requiredFeatures = [
+         'make_encoded',
+        'num-of-doors_encoded',
+        'body-style_encoded',
+        'drive-wheels_encoded',
+        'wheel-base',
+        'curb-weight',
+        'num-of-cylinders_encoded',
+        'engine-size',
+        'horsepower',
+        'peak-rpm'
+]
+
+
+11. Vectorize the requiredFeatures to a single 'features' column
+    ------------------------------------------------------------
+
+# InputFeatures are fed in the form of a DenseVector
+# Use VectorAssember to Vectorize the features to a column called 'features'
+# Pass the columns we want to be vectorized and
+# Output will be stored in a column called 'features'
+assembler = VectorAssembler( inputCols=requiredFeatures , outputCol='features')
+
+
+12.Instantiate LinearRegression Model
+   -----------------------------------
+
+from pyspark.ml.regression import LinearRegression
+
+lr=LinearRegression (
+				#Number of epochs for which we run training process. 
+				#An epoch is one run thru' entire training data set
+				maxIter=100, 
+				
+				#Regularisation Parameter Alpha, Penalty that is applied to our model co-efficients
+				regParam=1.0,
+				
+				#Similar to Alpha, except this is use to tune the model to move between Lasso and Ridge Regression
+				# 0.0 for Lasso Model
+				# 1.0 for Ridge Regression Model
+				elasticNetParam=0.8,
+				
+				labelCol='price',
+				featuresCol='features'
+)
+ 
+13.Instantiate the Pipeline with various stages
+   --------------------------------------------
+# indexers,encoders,assemblers and then our LinearRegression Estimator
+
+from pyspark.ml import Pipeline
+pipeline=Pipeline( stages=indexers + encoders + [assembler,lr] )
+
+
+14.Kickstart the Training Pipeline by calling fit() on trainingData
+   ----------------------------------------------------------------
+model=pipeline.fit(trainingData)
+# Returned model is actually a pipeline model, it is not really a Linear Regression Model
+# it contains all the stages of the training pipeline model
+
+
+# To Access only LR Model, we can access last stage of the training pipeline
+lrModel=model.stages[-1]
+
+
+
+15. Evaluate the Model
+    ------------------
+# We can 2 metrics to evaluate the LR Model
+# R2 Score: Measure of how well the LR Model captures the variance in underlying training data.
+print('Training R2 Score = ', lrModel.summary.r2)
+
+# Higher the value of R2 ,better  the model
+# RMSE : Gives average value by which our predictions vary from the actual price
+print('Training RMSE = ', lrModel.summary.rootMeanSquaredError)
+
+
+# Get the number of features that went into the model using numFeatures 
+lrModel.numFeatures
+# one-hot-encoders have expanded the number of features in our training data
+
+
+# Get the coefficients member variable on the model in DenseVector form
+lrModel.coefficients
+
+
+#length of coefficients corresponds to our features
+len(lrModel.coefficients)
+
+
+16. Use the trained Model to make predictions
+    -----------------------------------------
+# Use this LR model to perform predictions on our testData set
+
+predictions=model.transform(testData)
+predictionsDF=predictions.toPandas()
+predictionsDF.head()
+
+# Output Result includes 'prediction' column
+
+# Get the features and corresponding predictions for one instance in our testData set
+predictionsDF.describe()
+predictionsDF['Features'][0]
+
+
+17. Evaluate the Regression Model on test data set
+    ----------------------------------------------
+# Use the Regression Evaluator that allows to measure 
+# How well our regression model performed on the test data set
+from pyspark.ml.evaluation import RegressionEvaluator
+
+evaluator=RegressionEvaluator (
+					labelCol='price', 			# Column that holds Actual Price
+					predictionCol='prediction', # Column that holds the Predicted Price
+					metricName='r2' 			# The Metric to use
+)
+
+
+r2=evaluator.evaluate(predictions)
+print('Test R2 Score=',r2)
+# little lower than our training data
+
+
+# Use the RegressionEvaluator to calculate RMSE on the testdata
+
+evaluator=RegressionEvaluator (
+					labelCol='price', # Column that holds Actual Price
+					predictionCol='prediction', # Column that holds the Predicted Price
+					metricName='rmse' # The Metrics to use
+)
+rmse=evaluator.evaluate(predictions)
+print('Test RMSE Score=',rmse)
+# this is worse than our training data
+
+
+
+18. Compare price and predicted price in a DataFrame and plot a graph
+    -----------------------------------------------------------------
+predictionsPandaDF = predictions.select(
+				col('price'),
+				col('prediction')
+).toPandas()
+predictionsPandaDF.head()
+
+# Plot the values to see how closely they tract one another
+import matplotlib.pyplot as plt
+plt.figure(figsize=(15,6))
+plt.plot(predictionsPandaDF['price'], label='Actual')
+plt.plot(predictionsPandaDF['prediction'], label='Predicted')
+plt.ylabel('Price')
+plt.legend()
+plt.show()
+# Prediction is orange, Actual is blue.
+# they are pretty close
+
+
+
+
+
+

@@ -1,0 +1,116 @@
+#Instantiate SparkSession
+from pyspark.sql import SparkSession
+spark=SparkSession \
+		.builder \
+		.appName('Use Implicit Colloborative Filtering for Band  Recommendations (Implicit Feedback') \
+		.getOrCreate()
+		
+		
+
+# wget http://files.grouplens.org/datasets/hetrec2011/hetrec2011-lastfm-2k.zip
+# gsutil cp user_artists.dat gs://dexdebra-123/datasets
+# Use sparkSession to read csv file
+
+rawdata=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .option('delimiter','\t') \
+           .load('gs://dexdebra-123/datasets/user_artists.dat')
+
+
+from pyspark.sql.functions import col
+dataset = rawdata.select( 
+                col('userId').cast('int'),
+                col('artistID').cast('int'),
+                col('weight').cast('int')
+)
+dataset		   
+
+
+# See the distribution of values for weight
+dataset.select('weight').describe().toPandas(
+
+
+# ML perform far better with small numeric value
+# it is better if the values are standardized
+# allows us to mitigate extreme variance in input values
+# Standardize the value in 'weight' field as below
+# z= x- mu / alpha
+# this will give us the z-score for every value in the weights column
+
+# first find mean and SD of the values in weight column
+# store these in 2 new column mean_weight and sd_weight
+
+# Then Perform a cross join with the original data set which contains the userId , artistId and the weight
+# To this result add a new column which contains standardized and scaled weights
+
+from pyspark.sql.functions import stddev, mean, col
+df=dataset.select( mean('weight').alias('mean_weight'),stddev('weight').alias('stddev_weight'))\
+                             .crossJoin(dataset) \
+                             .withColumn('weight_scaled', 
+                                           ( col('weight') - col('mean_weight')) / col('stddev_weight'))
+df.toPandas().head()  
+
+
+
+# Train the Recommendation model
+(trainingData,testingData) = df.randomSplit([0.8,0.2])
+
+
+
+# Use ALS library to instantiate estimator to train the model
+# weighted regularization - prevent overfitting on the training data
+from pyspark.ml.recommendation  import ALS
+als=ALS(
+		maxIter=10,
+		regParam=0.1,
+		userCol='userId',
+		itemCol='artistID',
+        implicitPrefs=True, # To inform Spark it is dealing with implicit and not explicit Feedback
+		ratingCol='weight_scaled', # The Column with standardized weights
+		coldStartStrategy='drop' # if the algorithm encountes new user or product during validation it will drop that row
+		)
+
+model = als.fit(trainingData)
+
+
+# Perform predicts on the testingData
+predictions = model.transform(testingData)
+predictions.toPandas().head()            
+
+
+predictionsPandas = predictions.select('weight_scaled','prediction').toPandas()
+predictionsPandas.describe()
+
+
+artistsData=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .option('delimiter','\t') \
+           .load('gs://dexdebra-123/datasets/artists.dat')
+artistsData.toPandas().head()
+
+
+# To Get Artists Recommendations for a Particular User
+
+from pyspark.sql.types import IntegerType
+
+def getRecommendationsForUser(userId,numRecs):
+    # Create a DF with single user for whom we want recommendations
+    usersDF=spark.createDataFrame([userId],IntegerType()).toDF('userId')
+    # Get Recommended Artists for this user from ML model
+    userRecs=model.recommendForUserSubset(usersDF,numRecs)
+    # Setup the ArtistsID in a DF
+    artistsList=userRecs.collect()[0].recommendations
+    artistsDF=spark.createDataFrame(artistsList)
+    # Perform a Join operation with the artist Data in order to get name of recommended artist
+    # We join artists Data with artistsDF on the artistID column 
+    recommendedArtists=artistsData.join(artistsDF, artistsData.id == artistsDF.artistID)\
+		.orderBy('rating',ascending=False) \
+		.select('name','url','rating')
+    return recommendedArtists
+	
+	
+getRecommendationsForUser(939,10).toPandas()
+
+	

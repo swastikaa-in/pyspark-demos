@@ -1,0 +1,178 @@
+#Instantiate SparkSession
+from pyspark.sql import SparkSession
+spark=SparkSession \
+	.builder \
+	.appName('Use Colloborative Filtering for Movie Recommendations with Explicit Feedback ') \
+	.getOrCreate()
+	
+	
+
+# wget https://files.grouplens.org/datasets/movielens/ml-latest-small.zip
+# gsutil cp ratings.csv gs://dexdebra-123/datasets
+# Use sparkSession to read csv file
+
+rawdata=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .load('gs://dexdebra-123/datasets/ratings.csv')
+
+
+# Convert rawdata to dataframe
+# userId:
+# movieId:
+# rating: rating given by userId for movieId
+# timestamp
+from pyspark.sql.functions  import col
+dataset=rawdata.select(
+    col('userId').cast('int'),
+    col('movieId').cast('int'),
+    col('rating').cast('float')
+)		   
+
+
+
+# Examine the distribution of the values for the movie rating
+dataset.select('rating').toPandas().describe()
+
+
+
+# Split the movie data
+(trainingData,testData)=dataset.randomSplit([0.8,0.2])
+
+
+
+# Use ALS library to instantiate estimator to train the model
+# weighted regularization - prevent overfitting on the training data
+
+from pyspark.ml.recommendation  import ALS
+als=ALS(
+            maxIter=5,
+            regParam=0.1,
+            userCol='userId',		 # Columns for user's
+            itemCol='movieId', 		 # Columns for products in this case movies
+            ratingCol='rating',
+            coldStartStrategy='drop' # if the algorithm encountes new user or product during validation it will #drop that row
+)
+
+
+# Run training on our ML model
+model=als.fit(trainingData)
+
+
+# Call transform on the trained model to get predictions on testData
+predictions=model.transform(testData)
+predictions.toPandas().head()
+
+
+# Explore the ratings matrix
+# We will compare the distribution of the actual ratings and the predictions ratings in testData
+predictions.select('rating','prediction').toPandas().describe()
+
+
+
+# Evaluate the ALS model using RegressionEvaluator
+from pyspark.ml.evaluation import RegressionEvaluator
+evaluator=RegressionEvaluator(
+    metricName='rmse',
+    labelCol='rating', # original label
+    predictionCol='prediction' # predicted rating
+)
+
+
+
+rmse=evaluator.evaluate(predictions)
+print('RMSE=',rmse)
+
+
+# Use the model for movie recommendations
+userRecsall=model.recommendForAllUsers(3)
+userRecsall
+
+movieRecsAll=model.recommendForAllItems(3)
+movieRecsAll.toPandas().head()
+
+# The DF contains the movieId and a list of recommendations.
+# Recommendations are a list of (userId,rating) tuples.
+
+
+
+# When we use the recommendation model, we are not going to need recommendation for all users in the data set.
+# To get recommendations for only a specific set of user , we can do as below.
+from pyspark.sql.types import IntegerType
+usersList=[148,46,267]
+usersDF=spark.createDataFrame(usersList,IntegerType()).toDF('userId')
+usersDF.take(3)
+# here are the 3 users for whom we want recommendations
+
+
+# once we have the users, we will call as below.
+# top 5 movie recommendations for the 3 users we saw earlier
+userRecs=model.recommendForUserSubset(usersDF,5)
+# The recommendations are a list of Tuple. Where a tupe in a movie Id and corresponding RatingId
+userRecs.toPandas()
+
+
+userMoviesList=userRecs.filter(
+    userRecs.userId==148
+).select('recommendations')
+userMoviesList.collect()
+# Each row contains recommendation column which contains a list of recommendations
+# The recommendations are also row object (movieId,rating)
+
+
+# Extract the movie recommendation for this particular user into a list
+moviesList = userMoviesList.collect()[0].recommendations
+moviesList
+
+
+
+# Create a DataFrame containing the movieID and estimated rating for that movie in separate columns
+moviesDF = spark.createDataFrame( moviesList )
+moviesDF.toPandas()
+
+
+
+# We have the recommendation for a user in ID form
+# To Get the Actual Names of the movies that were recommended
+# We need to join this DataFrame with another DataFrame where we load in  the movie name Information
+
+# Use Spark Session and read in the movies.csv file
+# wget https://files.grouplens.org/datasets/movielens/ml-latest-small.zip
+# gsutil cp ratings.csv gs://dexdebra-123/datasets
+# Use sparkSession to read csv file
+moviedata=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .load('gs://dexdebra-123/datasets/movies.csv')
+
+
+# We can do a join operation to get the names of the recommended movies
+recommendedMovies = moviedata.join(
+                        moviesDF,on=['movieId']) \
+                            .orderBy('rating',ascending=False) \
+                                .select('title','genres','rating')
+recommendedMovies.toPandas()  
+
+
+
+
+from pyspark.sql.types import IntegerType
+
+def getRecommendationsForUser(userId,numRecs):
+        usersDF=spark.createDataFrame([userId],IntegerType()).toDF('userId')
+        userRecs=model.recommendForUserSubset(usersDF,numRecs)
+        moviesList=userRecs.collect()[0].recommendations
+        moviesDF=spark.createDataFrame(moviesList)
+        recommendedMovies=moviedata.join(moviesDF,on=['movieId'])\
+				.orderBy('rating',ascending=False) \
+				.select('title','genres','rating')
+		return recommendedMovies  		   
+
+		
+recommendationsForUser = getRecommendationsForUser(148,10)
+
+		
+
+
+
+

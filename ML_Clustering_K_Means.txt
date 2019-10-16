@@ -1,0 +1,191 @@
+#Instantiate SparkSession
+from pyspark.sql import SparkSession
+spark=SparkSession \
+	.builder \
+	.appName('Examine Data about passengers on Titanic') \
+	.getOrCreate()
+	
+
+# wget www.kaggle.com/c/3136/download/train.csv
+# gsutil cp train.csv gs://dexdebra-123/datasets
+# Use sparkSession to read csv file
+rawData=spark.read \
+           .format('csv') \
+           .option('header','true') \
+           .load('gs://dexdebra-123/datasets/train.csv')
+
+
+# Select columns useful for clustering
+from pyspark.sql.functions import col
+dataset=rawData.select(
+    col('Survived').cast('float'),
+    col('Pclass').cast('float'),
+    col('Sex'),
+    col('Age').cast('float'),
+    col('Fare').cast('float'),
+    col('Embarked')
+)
+
+
+# Replace All '?' value in all cells with specific value('None') in dataFrame
+print('Count Before: ' , dataset.count())
+dataset=dataset.replace('?',None)
+dataset=dataset.dropna(how='any')
+print('Count After: ' , dataset.count())
+
+
+
+#Convert Categorical values in String form to Numeric Form using StringIndexer
+# There are 2 columns with categorical data, 'Sex' and 'Embarked'
+# The output columns which represent this categorical data in numeric form are 'Gender' and 'Boarded'
+from pyspark.ml.feature import StringIndexer
+dataset=StringIndexer( 
+                            inputCol='Sex',
+                            outputCol='Gender',
+                            handleInvalid='keep'
+                    ).fit(dataset).transform(dataset)
+dataset=StringIndexer( 
+                            inputCol='Embarked',
+                            outputCol='Boarded',
+                            handleInvalid='keep'
+                     ).fit(dataset).transform(dataset)
+dataset.toPandas().head()
+
+
+# We can drop the original categorical columns as they are no longer needed
+dataset=dataset.drop('Sex')
+dataset=dataset.drop('Embarked')
+
+
+# Setup the RequiredFeatures for K-means Clustering algorithm
+requiredFeatures=[
+    'Survived',
+    'Pclass',
+    'Age',
+    'Fare',
+    'Gender',
+    'Boarded'
+]
+# Pass these requiredFeatures to VectorAssembler, which will assemble then into a single column
+
+
+# Assemble values into a Single Column using VectorAssembler
+# Vector Assembler is a Transformer, which takes a DF as input and returns a new DF with 
+# all features added to it
+from pyspark.ml.feature import VectorAssembler
+assembler=VectorAssembler(inputCols=requiredFeatures,outputCol='features')
+transformed_data=assembler.transform(dataset);
+
+
+# import estimator for k-means clustering
+from pyspark.ml.clustering import KMeans
+# k    : number of clusters
+# seed : Cluster Centers , initialize before starting cluster
+#kmeans=KMeans(k=5,seed=1)
+kmeans=KMeans(k=8,seed=8)
+# change to '8' clusters and a seed of '3'
+
+# Start training K-means Clustering model using fit() method on transformed_data
+model=kmeans.fit(transformed_data)
+
+
+# We call model.transform() on testingDat to get clustered Results in a DataFrame
+clusteredData=model.transform(transformed_data)
+
+
+#Evaluate how well the underlying data is clustered
+from pyspark.ml.evaluation import ClusteringEvaluator
+evaluator=ClusteringEvaluator()
+
+
+# silhouette: how similar every point is to other points in same cluster
+# value of '1' is ideal
+silhouette=evaluator.evaluate(clusteredData)
+print('Silhouette with squared euclidean distance = ',silhouette)
+# the Value is not too bad
+# with 8 clusters, it is 0.5988 now
+
+
+# Get the ClusterCenters
+centers=model.clusterCenters()
+print('Cluster Centers')
+for center in centers:
+  print(center)
+# Every Cluster center is an array whose length is equal number of features in our training data
+# which in our case was '6'
+
+
+# Examine clusteredData
+clusteredData.toPandas().head()
+# Notice that transform method has added 'prediction' column to DataFrame in addition to the
+# original columns which contain the individual features  and
+# 'features' column which contain all features grouped together
+# 'prediction' column contains cluster number associated with each record
+
+
+# Let examine dataset  as a whole and then examine the individual clusters
+# Find the Average value for every column across the entire dataset
+from pyspark.sql.functions import *
+dataset.select(
+        avg('Survived'),
+        avg('Pclass'),
+        avg('Age'),
+        avg('Fare'),
+        avg('Gender'),
+        avg('Boarded')
+).toPandas()
+# We will use these averages to use how the averages across the entire dataset 
+# stackup up against average values of individual clusters
+
+
+# Find Averages for Each Cluster
+# Let us group by 'prediction' column.
+# prediction' column contains clusters associated with every record
+# For Every Cluster we want to find average of feature values for values within the cluster
+# Also, total number of data points within each cluster
+# display results ordered by cluster number
+
+clusteredData.groupBy('prediction').agg (
+        avg('Survived'),
+        avg('Pclass'),
+        avg('Age'),
+        avg('Fare'),
+        avg('Gender'),
+        avg('Boarded'),
+        count('prediction'),
+).orderBy('prediction').toPandas()
+# Analysis
+
+# Average values for each of the features within each cluster are same as Cluster Centers
+# We calculated the Cluster Centers by taking the avg values of all points within the cluster
+
+# Let us consider the very first cluster, cluster '0'.
+# Compare its value against entire dataset
+# The survival rate for cluster '0' passenger is only 28% , whereas average survival rate is about 40%
+# Most of the passengers in Cluster '0'  did not survive sinking
+
+# Look at the Average of pClass column.
+# Notice that the passengers from Cluster '0' are more likely to belong to 3rd class.
+# The Average class values is pretty high, it is 2.54%  compared with 2.24% for entire dataset
+# passengers in Cluster '0' are more likely to be in 2nd class or 3rd class.
+# This is clear by the average fare they paid.
+# The average passenger fare is around '13'. Across the entire dataset average fare in 34.5
+# Average of gender column. Most of them are Male. Average is closer to '0' where 0 represents 'MALE' and 
+# '1' is FEMALE
+
+# Similarly we can do for other clusters.
+# For cluster 1, Survival rate is very high.
+# The pclass in this cluster in First Class.
+# The fare paid is also very high
+# Most of the passengers are female.
+
+
+# Filter the data only for a Single Cluster
+clusteredData.filter( clusteredData.prediction == 1).toPandas()
+
+
+
+
+
+
+

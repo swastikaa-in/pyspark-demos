@@ -1,0 +1,141 @@
+1.Instantiate SparkSession
+--------------------------
+from pyspark.sql import SparkSession
+spark=SparkSession \
+			.builder \
+			.appName('Predicting the grape variety from wine characteristics') \
+			.getOrCreate()
+			
+#SparkSession
+	# -Simplified Entry point used in Spark 2
+	# -Encapsulates within itself sparkcontext,sqlcontext and other contexts available in spark			
+	# -Specify the format in which the data exists and also if it has header or not.
+	
+	
+2.Load the DataSet into a DataFrame	( Tabular Format )	
+  ----------------------------------------------------
+# Source:https://archive.ics.uci.edu/ml/machine-learning-databases/wine/wine.data
+# Copy to cloud storage: gsutil cp wine.data gs://dexdebra-123/datasets
+# Use sparkSession to read csv file			
+rawData=spark.read \
+				.format('csv') \
+				.option('header','false') \
+				.load('gs://dexdebra-123/datasets/wine.data')			
+				
+
+3. Assign meaningful Headers (When there are no headers or when custom headers can make it more understandable)
+   ------------------------------------------------------------------------------------------------------------
+dataSet=rawData.toDF('Label',
+						'Alcohol','MalicAcid','Ash','AshAlkanity','Magnesium','TotalPhenols',
+						'Flavanoids','NonflavanoidPhenols','Proanthocyanins','ColorIntensity',
+						'Hue','OD','Proline'
+					)	
+
+					
+4.Setup the data in Vectorized Format
+=====================================
+# Extracts the labels and features from the input dataframe and converts features to a densevector
+# Using map function of RDD and we convert the result to another DF with 2 columns, "label" and "features"
+# Once vectorized, the resultant DF has 2 columns
+# 1st column , holds labels of our training data. Cultivators who produced the wine
+# 2nd column, are wine features, all features are lumped into a single column
+# Each row in DF is a row object with a "label" and "features" ( which are dense vectors )
+
+from pyspark.ml.linalg import Vectors
+
+def vectorize(data):
+     return data.rdd.map( lambda r: [ r[0], Vectors.dense(r[1:])]).toDF(['label','features'])
+vectorizedData = vectorize(dataSet)
+vectorizedData.show(5)			
+
+5.Convert Categorical Data in dataset to numerical form using StringIndexer FeatureTransformer
+==============================================================================================
+# The labels in the DataFrame event even tho' have numeric values as 1,2 and 3 , are only in string form.
+# Use StringIndexer, FeatureTransformer , to assign numeric values to each of the categorical variable
+# Pass the column on which we want to apply feature transformatio. That is , the input column, "label" column
+# Output Column added to the DF is indexedLabel Column
+# Original Column contained 1,2 and 3 as string values, they are converted to float values (0.1,1.0,2.0)
+
+from pyspark.ml.feature import StringIndexer
+labelIndexer=StringIndexer( inputCol='label',outputCol='indexedLabel' )		
+
+# Fit method on the StringIndexer will 
+# Generate the corresponding floating point value for the categorical data and 
+# Apply these floating point values to vectorized data 
+# This is done using transform method 
+indexedData=labelIndexer.fit(vectorizedData).transform(vectorizedData)
+
+# We can verify this , by seeing the indexedData DF. 
+# The original label was of type 'string' , the indexedLabel is of type 'float'
+indexedData.take(2)
+
+# Display unique values for 'label' and 'indexedLabel' columns
+# They represent wines from 3 different cultivators
+# The unique labels are 1,2 and 3
+indexedData.select('label').distinct().show()
+
+# The unique indexedLabel are 0.0,1.0 and 2.0
+indexedData.select('indexedLabel').distinct().show()
+
+# We have used FeatureTransformer to convert CategoricalData to numerical values
+
+
+
+6.D(80%) and test data(20%) set 80:20 ratio
+============================================================================
+(trainingData,testData)=indexedData.randomSplit([0.8,0.2])
+
+
+7.Perform training using DecisionTreeClassifier in ml library
+=============================================================
+# Import DecisionTreeClassifier from pyspark.ml library
+from pyspark.ml.classification  import DecisionTreeClassifier
+
+# DecisionTreeClassifier is an Estimator object which fits on the training data to produce DecisionTree ML model
+# indexedLabel is the column  which contains numerical values
+# featuresCol is the one with features (all features lumped into a single column)
+
+dtree=DecisionTreeClassifier(
+								labelCol='indexedLabel', # Column with numerical values
+								featuresCol='features',  # Column which contains all features lumped into single column
+								maxDepth=3,
+								impurity='gini'
+							)
+
+							
+# Instantiate this estimator and call the fit() method on the trainingData to start training ML model
+model=dtree.fit(trainingData)		
+
+
+8. Setup a Class to Evaluate how well the trained model performs
+================================================================
+# Class operates on DataFrames
+
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+evaluator=MulticlassClassificationEvaluator(
+		labelCol='indexedLabel',    # column which represents actual labels
+		predictionCol='prediction', # column which represents predictions
+		metricName='f1'             # harmonic mean of precision and recall
+)
+
+# Since ML Model is a transformer, we can call transform() on testData
+# This is what we will use for predictions
+# predictions result is also in the form of a DataFrame
+transformed_data=model.transform(testData)
+transformed_data.show(5)
+
+
+# 3 Columns are added to the dataframe as below.
+# 1.rawPrediction - Raw Prediction value
+# 2.probablity    - Probablity of Individual Predictions
+# 3.prediction    - Final Predicted Label 
+
+# The values in the last "prediction" column is the final predicted result.
+# We will compare 'prediction' column to actual label in 'indexedLabel' column
+
+9. Use MulticlassClassificationEvaluator to evaluate the accuracy of model on testData
+=======================================================================================
+print(evaluator.getMetricName(),'accuracy:',evaluator.evaluate(transformed_data))
+# accuracy nearly 85%
+
+
